@@ -251,10 +251,11 @@ function recurLabel(t){
 
 // A recurring task instance key: taskId + dayIdx + weekKey
 function instanceKey(taskId,dayIdx,wk){return `done_${taskId}_${dayIdx}_${wk}`;}
+function skipKey(uid,dayIdx,wk){return `skip_${uid}_${dayIdx}_${wk}`;}
+function isSkipped(t,dayIdx,wk){return load(skipKey(t.uid,dayIdx,wk),false);}
+function setSkipped(t,dayIdx,wk,val){save(skipKey(t.uid,dayIdx,wk),val);}
 function isInstanceDone(t,dayIdx,wk){
-  // For the original placement week+day, use t.done
   if(t.day===String(dayIdx)&&t.week===wk)return t.done;
-  // For recurring instances on other days/weeks, use localStorage
   return load(instanceKey(t.id,dayIdx,wk),false);
 }
 function setInstanceDone(t,dayIdx,wk,val){
@@ -266,8 +267,9 @@ function taskVisibleOnDay(t,dayIdx,off=weekOff){
   const wk=weekKey(off);
   const days=getDays(off);
   const dayDate=days[dayIdx];
-  // Check end date
   if(t.endDate&&dayDate>new Date(t.endDate+'T23:59:59'))return false;
+  // Hide skipped instances
+  if(isSkipped(t,dayIdx,wk))return false;
   if(t.day===String(dayIdx)&&t.week===wk)return true;
   if(!t.recur||t.recur==='none')return false;
   if(t.recur==='daily')return true;
@@ -324,11 +326,14 @@ function renderTaskCards(dayIdx){
     const timeLbl=t.time?t.time:'';
     const durLbl=t.dur?t.dur+'min':'';
     const metaLbl=[timeLbl,durLbl].filter(Boolean).join(' · ');
+    const isRecurring=t.recur&&t.recur!=='none';
+    const isOriginal=t.day===String(dayIdx)&&t.week===wk;
+    const showSkip=isRecurring&&!isOriginal;
     return`<div class="task-card${done?' done':''}" style="background:${t.color}18;border-color:${t.color}44;color:${t.color};min-height:${h}px" data-uid="${t.uid}" data-day="${dayIdx}">
       <div class="task-actions">
         <button class="task-btn task-check" data-action="toggle" data-uid="${t.uid}" data-day="${dayIdx}" title="${done?'Unmark':'Complete'}">${done?'↩':'✓'}</button>
         <button class="task-btn" data-action="edit" data-uid="${t.uid}" title="Edit">✎</button>
-        <button class="task-btn" data-action="delete" data-uid="${t.uid}" title="Delete">✕</button>
+        ${showSkip?`<button class="task-btn" data-action="skip" data-uid="${t.uid}" data-day="${dayIdx}" title="Skip this week" style="font-size:9px">✕</button>`:`<button class="task-btn" data-action="delete" data-uid="${t.uid}" title="Delete">✕</button>`}
       </div>
       <div class="task-title">${t.title}</div>
       ${metaLbl||rl?`<div class="task-label">
@@ -337,6 +342,12 @@ function renderTaskCards(dayIdx){
       </div>`:''}
     </div>`;
   }).join('');
+}
+
+function skipInstance(uid,dayIdx){
+  const t=tasks.find(x=>x.uid===uid);if(!t)return;
+  setSkipped(t,dayIdx,weekKey(),true);
+  render();toast('Skipped for this week');
 }
 
 function toggleInstance(uid,dayIdx){
@@ -479,10 +490,43 @@ function assignToDay(dayIdx){
 }
 
 function renderStats(){
-  document.getElementById('week-stats').innerHTML=`<div class="sidebar-title" style="margin-bottom:10px">This week</div>`+getDays().map((d,i)=>{
+  const wk=weekKey();
+  const days=getDays();
+
+  // Day scores
+  const dayRows=days.map((d,i)=>{
     const score=getDayScore(i);const pct=score!==null?score:0;const sc=scoreColor(pct);
     return`<div class="stat-row"><span style="color:${isToday(d)?'var(--green)':'var(--text2)'};font-size:12px">${DAYS[i]}</span><span style="font-family:var(--mono);font-size:11px;color:${score!==null?sc:'var(--text3)'}">${score!==null?score+'%':'—'}</span></div>${score!==null?`<div class="sbar-bg"><div class="sbar-fill" style="width:${pct}%;background:${sc}"></div></div>`:''}`; 
   }).join('');
+
+  // Per-task weekly scores
+  // Find all tasks visible at least once this week
+  const weekTaskMap=new Map();
+  days.forEach((d,i)=>{
+    tasks.filter(t=>taskVisibleOnDay(t,i)).forEach(t=>{
+      if(!weekTaskMap.has(t.uid))weekTaskMap.set(t.uid,{t,total:0,done:0});
+      weekTaskMap.get(t.uid).total++;
+      if(isInstanceDone(t,i,wk))weekTaskMap.get(t.uid).done++;
+    });
+  });
+
+  let taskRows='';
+  if(weekTaskMap.size>0){
+    taskRows=`<div style="margin-top:14px;padding-top:10px;border-top:0.5px solid var(--border)"><div class="sidebar-title" style="margin-bottom:8px">Tasks this week</div>`;
+    weekTaskMap.forEach(({t,total,done})=>{
+      const pct=Math.round(done/total*100);const sc=scoreColor(pct);
+      taskRows+=`<div style="margin-bottom:8px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:3px">
+          <span style="font-size:11px;color:${t.color};overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;padding-right:6px">${t.title}</span>
+          <span style="font-size:10px;font-family:var(--mono);color:${sc};flex-shrink:0">${done}/${total}</span>
+        </div>
+        <div class="sbar-bg"><div class="sbar-fill" style="width:${pct}%;background:${sc}"></div></div>
+      </div>`;
+    });
+    taskRows+='</div>';
+  }
+
+  document.getElementById('week-stats').innerHTML=`<div class="sidebar-title" style="margin-bottom:10px">This week</div>${dayRows}${taskRows}`;
 }
 
 // EVENT DELEGATION — handles clicks on dynamically rendered task buttons
@@ -496,6 +540,7 @@ document.addEventListener('click',function(e){
   if(action==='toggle')toggleInstance(uid,day);
   else if(action==='edit')openEditTask(uid);
   else if(action==='delete')deleteTask(uid);
+  else if(action==='skip')skipInstance(uid,day);
 });
 
 renderIdeaColors();renderTaskColors();renderDaysPicker();render();syncAll();
