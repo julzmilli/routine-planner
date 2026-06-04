@@ -127,6 +127,9 @@ select.mi option{background:var(--bg3);}
       <div class="ml">Select days</div>
       <div class="days-picker" id="days-picker"></div>
     </div>
+    <div id="end-date-wrap" style="display:none">
+      <div class="mf"><div class="ml">End repeat (optional)</div><input class="mi" id="t-end-date" type="date"></div>
+    </div>
     <div class="modal-actions">
       <button class="btn" onclick="closeTaskModal()">Cancel</button>
       <button class="btn btn-green" onclick="saveTask()">Save</button>
@@ -221,8 +224,11 @@ let editTask=null;
 let pendingDay=null;
 let assignIdea=null;
 let localId=-1;
-// custom days selection stored as simple array
 let customDaysSel=[];
+
+// Give every loaded task a uid if missing
+tasks.forEach(t=>{if(!t.uid)t.uid='u'+Math.random().toString(36).slice(2);});
+save('rp_tasks',tasks);
 
 function weekStart(off=weekOff){const d=new Date();d.setHours(0,0,0,0);d.setDate(d.getDate()-d.getDay()+(off*7));return d;}
 function weekKey(off=weekOff){return weekStart(off).toISOString().split('T')[0];}
@@ -258,6 +264,10 @@ function setInstanceDone(t,dayIdx,wk,val){
 
 function taskVisibleOnDay(t,dayIdx,off=weekOff){
   const wk=weekKey(off);
+  const days=getDays(off);
+  const dayDate=days[dayIdx];
+  // Check end date
+  if(t.endDate&&dayDate>new Date(t.endDate+'T23:59:59'))return false;
   if(t.day===String(dayIdx)&&t.week===wk)return true;
   if(!t.recur||t.recur==='none')return false;
   if(t.recur==='daily')return true;
@@ -314,11 +324,11 @@ function renderTaskCards(dayIdx){
     const timeLbl=t.time?t.time:'';
     const durLbl=t.dur?t.dur+'min':'';
     const metaLbl=[timeLbl,durLbl].filter(Boolean).join(' · ');
-    return`<div class="task-card${done?' done':''}" style="background:${t.color}18;border-color:${t.color}44;color:${t.color};min-height:${h}px">
+    return`<div class="task-card${done?' done':''}" style="background:${t.color}18;border-color:${t.color}44;color:${t.color};min-height:${h}px" data-uid="${t.uid}" data-day="${dayIdx}">
       <div class="task-actions">
-        <button class="task-btn task-check" onclick="toggleInstance(${t.id},${dayIdx})" title="${done?'Unmark':'Complete'}">${done?'↩':'✓'}</button>
-        <button class="task-btn" onclick="openEditTask(${t.id})" title="Edit">✎</button>
-        <button class="task-btn" onclick="deleteTask(${t.id})" title="Delete">✕</button>
+        <button class="task-btn task-check" data-action="toggle" data-uid="${t.uid}" data-day="${dayIdx}" title="${done?'Unmark':'Complete'}">${done?'↩':'✓'}</button>
+        <button class="task-btn" data-action="edit" data-uid="${t.uid}" title="Edit">✎</button>
+        <button class="task-btn" data-action="delete" data-uid="${t.uid}" title="Delete">✕</button>
       </div>
       <div class="task-title">${t.title}</div>
       ${metaLbl||rl?`<div class="task-label">
@@ -329,17 +339,15 @@ function renderTaskCards(dayIdx){
   }).join('');
 }
 
-function toggleInstance(taskId,dayIdx){
-  const t=tasks.find(x=>x.id===taskId);if(!t)return;
-  const wk=weekKey();
-  const cur=isInstanceDone(t,dayIdx,wk);
-  setInstanceDone(t,dayIdx,wk,!cur);
-  render();
+function toggleInstance(uid,dayIdx){
+  const t=tasks.find(x=>x.uid===uid);if(!t)return;
+  const wk=weekKey();const cur=isInstanceDone(t,dayIdx,wk);
+  setInstanceDone(t,dayIdx,wk,!cur);render();
 }
 
-function deleteTask(id){
-  const t=tasks.find(x=>x.id===id);
-  tasks=tasks.filter(x=>x.id!==id);save('rp_tasks',tasks);
+function deleteTask(uid){
+  const t=tasks.find(x=>x.uid===uid);
+  tasks=tasks.filter(x=>x.uid!==uid);save('rp_tasks',tasks);
   if(t&&t.id>0)sbDelete('routine_blocks',t.id).catch(()=>{});
   render();
 }
@@ -348,6 +356,7 @@ function deleteTask(id){
 function onRecurChange(){
   const v=document.getElementById('t-recur').value;
   document.getElementById('custom-days-wrap').style.display=v==='custom'?'block':'none';
+  document.getElementById('end-date-wrap').style.display=v!=='none'?'block':'none';
 }
 
 function renderDaysPicker(){
@@ -368,21 +377,25 @@ function openTaskModal(dayIdx){
   document.getElementById('t-dur').value='';
   document.getElementById('t-recur').value='none';
   document.getElementById('custom-days-wrap').style.display='none';
+  document.getElementById('end-date-wrap').style.display='none';
+  document.getElementById('t-end-date').value='';
   customDaysSel=[];
   selColor=COLORS[0];renderTaskColors();renderDaysPicker();
   document.getElementById('task-modal').classList.add('show');
   setTimeout(()=>document.getElementById('t-title').focus(),100);
 }
-function openEditTask(id){
-  const t=tasks.find(x=>x.id===id);if(!t)return;
+function openEditTask(uid){
+  const t=tasks.find(x=>x.uid===uid);if(!t)return;
   editTask=t;pendingDay=parseInt(t.day);
   document.getElementById('task-modal-title').textContent='Edit Task';
   document.getElementById('t-title').value=t.title;
   document.getElementById('t-time').value=t.time||'';
   document.getElementById('t-dur').value=t.dur||'';
   document.getElementById('t-recur').value=t.recur||'none';
+  document.getElementById('t-end-date').value=t.endDate||'';
   customDaysSel=[...(t.customDays||[])];
   document.getElementById('custom-days-wrap').style.display=t.recur==='custom'?'block':'none';
+  document.getElementById('end-date-wrap').style.display=(t.recur&&t.recur!=='none')?'block':'none';
   selColor=t.color;renderTaskColors();renderDaysPicker();
   document.getElementById('task-modal').classList.add('show');
   setTimeout(()=>document.getElementById('t-title').focus(),100);
@@ -397,12 +410,14 @@ function saveTask(){
   const dur=parseInt(document.getElementById('t-dur').value)||null;
   const recur=document.getElementById('t-recur').value;
   const customDays=recur==='custom'?[...customDaysSel]:[];
+  const endDate=document.getElementById('t-end-date').value||null;
   if(editTask){
-    Object.assign(editTask,{title,time,dur,color:selColor,recur,customDays});
+    Object.assign(editTask,{title,time,dur,color:selColor,recur,customDays,endDate});
     save('rp_tasks',tasks);
     if(editTask.id>0)sbUpsert('routine_blocks',[taskToRow(editTask)]).catch(()=>{});
   }else{
-    const nt={id:localId--,day:String(pendingDay),time,dur,title,color:selColor,done:false,week:weekKey(),recur,customDays};
+    const uid='u'+Math.random().toString(36).slice(2);
+    const nt={id:localId--,uid,day:String(pendingDay),time,dur,title,color:selColor,done:false,week:weekKey(),recur,customDays,endDate};
     tasks.push(nt);save('rp_tasks',tasks);
     sbUpsert('routine_blocks',[{day:nt.day,start_time:time,duration:dur||30,title,category:JSON.stringify({recur,customDays}),color:selColor,completed:false,week_start:nt.week}])
       .then(async()=>{try{const d=await sbGet('routine_blocks','order=id.desc&limit=1');if(d&&d[0])nt.id=d[0].id;save('rp_tasks',tasks);}catch(e){}})
@@ -435,7 +450,7 @@ function handleDrop(e,dayIdx){
   document.getElementById('body-'+dayIdx)?.classList.remove('drag-over');
   if(dragIdeaId===null)return;
   const idea=ideas.find(i=>i.id===dragIdeaId);if(!idea)return;
-  const nt={id:localId--,day:String(dayIdx),time:'',dur:null,title:idea.title,color:idea.color,done:false,week:weekKey(),recur:'none',customDays:[]};
+  const nt={id:localId--,uid:'u'+Math.random().toString(36).slice(2),day:String(dayIdx),time:'',dur:null,title:idea.title,color:idea.color,done:false,week:weekKey(),recur:'none',customDays:[],endDate:null};
   tasks.push(nt);save('rp_tasks',tasks);
   sbUpsert('routine_blocks',[{day:nt.day,start_time:'',duration:30,title:nt.title,category:JSON.stringify({recur:'none',customDays:[]}),color:nt.color,completed:false,week_start:nt.week}])
     .then(async()=>{try{const d=await sbGet('routine_blocks','order=id.desc&limit=1');if(d&&d[0])nt.id=d[0].id;save('rp_tasks',tasks);}catch(e){}}).catch(()=>{});
@@ -456,7 +471,7 @@ function assignToDay(dayIdx){
   if(!assignIdea)return;
   const time=document.getElementById('assign-time').value;
   const dur=parseInt(document.getElementById('assign-dur').value)||null;
-  const nt={id:localId--,day:String(dayIdx),time,dur,title:assignIdea.title,color:assignIdea.color,done:false,week:weekKey(),recur:'none',customDays:[]};
+  const nt={id:localId--,uid:'u'+Math.random().toString(36).slice(2),day:String(dayIdx),time,dur,title:assignIdea.title,color:assignIdea.color,done:false,week:weekKey(),recur:'none',customDays:[],endDate:null};
   tasks.push(nt);save('rp_tasks',tasks);
   sbUpsert('routine_blocks',[{day:nt.day,start_time:time,duration:dur||30,title:nt.title,category:JSON.stringify({recur:'none',customDays:[]}),color:nt.color,completed:false,week_start:nt.week}])
     .then(async()=>{try{const d=await sbGet('routine_blocks','order=id.desc&limit=1');if(d&&d[0])nt.id=d[0].id;save('rp_tasks',tasks);}catch(e){}}).catch(()=>{});
@@ -469,6 +484,19 @@ function renderStats(){
     return`<div class="stat-row"><span style="color:${isToday(d)?'var(--green)':'var(--text2)'};font-size:12px">${DAYS[i]}</span><span style="font-family:var(--mono);font-size:11px;color:${score!==null?sc:'var(--text3)'}">${score!==null?score+'%':'—'}</span></div>${score!==null?`<div class="sbar-bg"><div class="sbar-fill" style="width:${pct}%;background:${sc}"></div></div>`:''}`; 
   }).join('');
 }
+
+// EVENT DELEGATION — handles clicks on dynamically rendered task buttons
+document.addEventListener('click',function(e){
+  const btn=e.target.closest('[data-action]');
+  if(!btn)return;
+  e.stopPropagation();
+  const action=btn.dataset.action;
+  const uid=btn.dataset.uid;
+  const day=parseInt(btn.dataset.day);
+  if(action==='toggle')toggleInstance(uid,day);
+  else if(action==='edit')openEditTask(uid);
+  else if(action==='delete')deleteTask(uid);
+});
 
 renderIdeaColors();renderTaskColors();renderDaysPicker();render();syncAll();
 </script>
